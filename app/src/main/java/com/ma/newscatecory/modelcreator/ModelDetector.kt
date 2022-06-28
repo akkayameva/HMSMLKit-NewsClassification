@@ -2,20 +2,20 @@ package com.ma.newscatecory.modelcreator
 
 import android.content.Context
 import android.util.Log
-import com.huawei.hms.mlsdk.custom.MLModelExecutor
 import kotlin.Throws
 import android.widget.Toast
+import com.huawei.agconnect.config.AGConnectServicesConfig
 import com.huawei.hiai.modelcreatorsdk.textclassifier.TextClassifier
 import com.huawei.hmf.tasks.OnSuccessListener
-import com.huawei.hms.mlsdk.custom.MLModelOutputs
 import com.huawei.hmf.tasks.OnFailureListener
-import com.huawei.hms.mlsdk.custom.MLModelInputs
+import com.huawei.hmf.tasks.Task
+import com.huawei.hms.mlsdk.common.MLApplication
 import com.huawei.hms.mlsdk.common.MLException
-import com.huawei.hms.mlsdk.custom.MLModelInputOutputSettings
-import com.huawei.hms.mlsdk.custom.MLModelDataType
-import com.huawei.hms.mlsdk.custom.MLCustomLocalModel
-import com.huawei.hms.mlsdk.custom.MLModelExecutorSettings
+import com.huawei.hms.mlsdk.custom.*
+import com.huawei.hms.mlsdk.model.download.MLLocalModelManager
+import com.huawei.hms.mlsdk.model.download.MLModelDownloadStrategy
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.lang.Exception
@@ -26,7 +26,7 @@ class ModelDetector(private val context: Context) {
     private val mModelFullName = "$mModelName.ms"
     private var classifier: TextClassifier? = null
     private var modelExecutor: MLModelExecutor? = null
-    private var loadMindsporeModelOk = false
+    private var loadMindsporeModelOk = true
 
     @Throws(Exception::class)
     fun loadFromAssets() {
@@ -43,6 +43,80 @@ class ModelDetector(private val context: Context) {
         //load minspore model
         loadMindsporeModel()
     }
+
+
+    fun loadModelFromHMSCloudHosting() {
+        //init hms
+        val config = AGConnectServicesConfig.fromContext(context)
+        MLApplication.getInstance().setAccessToken(config.getString("client/api_key"))
+
+        //download mc model
+        val remoteModelName = "news_classification" // to do, you need to set, your model name
+        val downloadMcTask = downloadFile(remoteModelName)
+        object : Thread() {
+            override fun run() {
+                while (!downloadMcTask.isComplete) {
+                    Companion.sleep(1000)
+                    Log.d(TAG, "wait download mc task isComplete")
+                }
+                try {
+                    val mcFile = MLLocalModelManager.getInstance().getSyncRecentModelFile(
+                        MLCustomRemoteModel.Factory(remoteModelName).create()
+                    )
+                    Log.d(TAG, "mc model path:" + mcFile.absolutePath)
+                    classifier = TextClassifier(
+                        context, FileInputStream(mcFile)
+                    )
+                    Log.d(TAG, "load model hms success")
+                    if (classifier!!.isHighAccMode) {
+                        val resRemoteName = "text_classifier.mc"
+                        val downloadResTask = downloadFile(resRemoteName)
+                        object : Thread() {
+                            override fun run() {
+                                while (!downloadResTask.isComplete) {
+                                    Companion.sleep(1000)
+                                    Log.d(TAG, "wait download res task isComplete")
+                                }
+                                try {
+                                    val resFile = MLLocalModelManager.getInstance()
+                                        .getSyncRecentModelFile(
+                                            MLCustomRemoteModel.Factory(resRemoteName).create()
+                                        )
+                                    if (classifier!!.loadHighAccModelRes(resFile)) {
+                                        Log.d(TAG, "init high acc res ok")
+                                        loadMindsporeModel()
+                                    } else {
+                                        Log.d(TAG, "init high acc res fail")
+                                    }
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            }
+                        }.start()
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }.start()
+    }
+
+    fun downloadFile(remoteName: String?): Task<Void> {
+        val strategy = MLModelDownloadStrategy.Factory()
+            .needWifi()
+            .setRegion(MLModelDownloadStrategy.REGION_DR_EUROPE) // set Region： supported：REGION_DR_CHINA，REGION_DR_AFILA，REGION_DR_EUROPE，REGION_DR_RUSSIA。
+            .create()
+        val customRemoteModel =
+            MLCustomRemoteModel.Factory(remoteName).create()
+        return MLLocalModelManager.getInstance()
+            .downloadModel(customRemoteModel, strategy) { alreadyDownLength, totalLength ->
+                Log.d(TAG, "current:$alreadyDownLength total:$totalLength")
+                if (alreadyDownLength == totalLength) { //download complete
+                    Log.d(TAG, "model download success")
+                }
+            }
+    }
+
 
     val isReady: Boolean
         get() = classifier != null && classifier!!.isInitOk && loadMindsporeModelOk
@@ -157,6 +231,7 @@ class ModelDetector(private val context: Context) {
     }
 
     init {
-        loadFromAssets()
+        //loadFromAssets()
+        loadModelFromHMSCloudHosting();
     }
 }
